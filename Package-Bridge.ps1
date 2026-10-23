@@ -1,8 +1,8 @@
 $ErrorActionPreference = 'Stop'
 $project = $PSScriptRoot
-$version = '0.3.11'
-$output = Join-Path $project "cnc-machine-tcp-bridge-v$version.zip"
-$stage = Join-Path ([System.IO.Path]::GetTempPath()) "cnc-machine-tcp-bridge-$([guid]::NewGuid().ToString('N'))"
+$version = '0.3.12'
+$output = Join-Path $project "makera-z1-tcp-bridge-v$version.zip"
+$stage = Join-Path ([System.IO.Path]::GetTempPath()) "makera-z1-tcp-bridge-$([guid]::NewGuid().ToString('N'))"
 $include = @('MakeraZ1TcpBridge.exe', 'Program.cs', 'Build-Bridge.ps1', 'Package-Bridge.ps1', 'Install-Z1Bridge.ps1', 'Update-InstalledService.ps1', 'Uninstall-Z1Bridge.ps1', 'nssm.exe', 'NSSM-NOTICE.txt', 'README.md', 'screenshots')
 New-Item -ItemType Directory -Path $stage | Out-Null
 try {
