@@ -1,0 +1,4 @@
+NSSM 2.24-101-g897c7ad x64
+Downloaded from https://www.nssm.cc/ci/nssm-2.24-101-g897c7ad.zip
+NSSM is public domain, per https://www.nssm.cc/download.
+SHA-256: EEE9C44C29C2BE011F1F1E43BB8C3FCA888CB81053022EC5A0060035DE16D848
