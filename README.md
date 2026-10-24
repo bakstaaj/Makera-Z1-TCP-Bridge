@@ -8,7 +8,7 @@ This bridge supports the Makera Z1 protocol. It does not currently support other
 
 ## Quick start
 
-1. Download and extract `makera-z1-tcp-bridge-v0.3.12.zip`.
+1. Download and extract `makera-z1-tcp-bridge-v0.3.13.zip`.
 2. Open PowerShell **as Administrator**, change to the extracted folder, and run `Install-Z1Bridge.ps1`.
 3. Enter the Z1 IP address and port when prompted. The usual Z1 port is `2222`.
 4. In gSender, select **Ethernet** and connect to host `127.0.0.1`, port `2323`, using the GRBL profile.

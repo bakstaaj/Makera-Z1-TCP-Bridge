@@ -384,8 +384,8 @@ namespace MakeraZ1TcpBridge
                         if (b == (byte)'?') { FlushLine(line, z1Stream, localStream, config, sessionSettings, positions, ref pendingVersionReplies); SendPayload(z1Stream, new byte[] { 0xA1, (byte)'?' }); }
                         else if (b == 0x18)
                         {
-                            // GRBL Ctrl-X is realtime: discard any incomplete buffered
-                            // line and send Makera's captured halt byte immediately.
+                            // GRBL Ctrl-X is realtime. Makera's serial protocol expects
+                            // the control-single packet type before the Ctrl-X byte.
                             if (line.Count > 0) Debug("Discarded incomplete G-code line on GRBL Ctrl-X");
                             line.Clear();
                             SendZ1Halt(z1Stream, positions);
@@ -744,8 +744,8 @@ namespace MakeraZ1TcpBridge
                 if (positions.Machine != null) positions.ProjectedMachine = (double[])positions.Machine.Clone();
                 if (positions.Work != null) positions.ProjectedWork = (double[])positions.Work.Clone();
             }
-            Debug("Translated GRBL Ctrl-X to Makera halt frame (payload 0x18)");
-            SendPayload(stream, new byte[] { 0x18 });
+            Debug("Translated GRBL Ctrl-X to Makera PTYPE_CTRL_SINGLE halt packet (A1 18)");
+            SendPayload(stream, new byte[] { 0xA1, 0x18 });
         }
 
         private static void WriteLocal(NetworkStream stream, byte[] data)
