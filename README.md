@@ -8,7 +8,7 @@ This bridge supports the Makera Z1 protocol. It does not currently support other
 
 ## Quick start
 
-1. Download and extract `makera-z1-tcp-bridge-v0.3.16.zip`.
+1. Download and extract `makera-z1-tcp-bridge-v0.3.17.zip`.
 2. Open PowerShell **as Administrator**, change to the extracted folder, and run `Install-Z1Bridge.ps1`.
 3. Enter the Z1 IP address and port when prompted. The usual Z1 port is `2222`.
 4. In gSender, select **Ethernet** and connect to host `127.0.0.1`, port `2323`, using the GRBL profile.
@@ -23,10 +23,10 @@ The installer creates `C:\makera_z1_tcp_bridge`, writes `config.yaml`, and insta
 - Translates `$J=` jog commands, jog cancel, and GRBL Ctrl-X halt.
 - Maps Z1 sensor fields to GRBL `Pn:` tokens where possible and preserves extended values in a `Z1:` status field.
 - Polls Z1 diagnostics while gSender is connected to refresh accessory and sensor status.
-- Provides a loopback-only upload API at `http://127.0.0.1:2324/api/upload`. Uploads are multiplexed over the active gSender-to-Z1 connection, so gSender does not have to disconnect while the SD file is transferred.
+- Provides loopback upload and local-play APIs at `http://127.0.0.1:2324/api/upload` and `/api/play`. Uploads and `play /sd/gcodes/<filename>` are multiplexed over the active gSender-to-Z1 connection, so gSender stays connected for monitoring.
 - Uploads into `/sd/gcodes/` and confirms the file there before local playback.
 
-The bridge translates individual commands. Probing and tool changes remain the responsibility of the sender and are sent as G-code/controller commands. The CNC Job Setup plugin uses the bridge upload API, which places the file at `/sd/gcodes/<filename>`, then sends `M32 gcodes/<filename>` through gSender. The Z1 firmware prepends `/sd/` to the M32 argument, so the relative path must include `gcodes/`. gSender remains connected to monitor controller state; the sender does not stream the job's G-code lines.
+The bridge translates individual commands. Probing and tool changes remain the responsibility of the sender and are sent as G-code/controller commands. The CNC Job Setup plugin uploads and verifies `/sd/gcodes/<filename>`, then asks the bridge to send the same `play /sd/gcodes/<filename>` text command used by Makera Studio. The bridge waits for the Z1's `ok` response before confirming the start request. gSender stays connected to monitor controller state and SD progress; it does not stream the job's G-code lines.
 
 ## Configuration and troubleshooting
 
@@ -67,3 +67,11 @@ Protocol translation is based on captured Makera Studio traffic and the publishe
 ## Package contents
 
 The ZIP includes the prebuilt bridge executable, NSSM service wrapper and notice, installer, update/uninstall scripts, C# source, build/package scripts, README, and screenshot.
+
+## Release notes
+
+### 0.3.17
+
+- Added the loopback `/api/play` endpoint for starting an uploaded Z1 SD-card file through the active gSender connection.
+- The bridge waits for the controller's `ok` response before reporting that the local playback request was accepted.
+- Suppressed background diagnostics polling while file upload and playback commands use the active connection.

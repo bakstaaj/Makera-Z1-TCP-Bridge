@@ -106,7 +106,7 @@ namespace MakeraZ1TcpBridge
             });
             api.IsBackground = true;
             api.Start();
-            Log("Local upload API listening on http://127.0.0.1:2324/api/upload (uses active gSender Z1 session)");
+            Log("Local upload and playback API listening on http://127.0.0.1:2324 (uses active gSender Z1 session)");
         }
 
         private static void HandleUploadRequest(HttpListenerContext context)
@@ -130,7 +130,8 @@ namespace MakeraZ1TcpBridge
                 response.Headers["Access-Control-Allow-Methods"] = "POST, OPTIONS";
                 response.Headers["Access-Control-Allow-Headers"] = "Content-Type";
                 if (context.Request.HttpMethod == "OPTIONS") { response.StatusCode = 204; return; }
-                if (context.Request.HttpMethod != "POST" || context.Request.Url.AbsolutePath != "/api/upload")
+                string endpoint = context.Request.Url.AbsolutePath;
+                if (context.Request.HttpMethod != "POST" || (endpoint != "/api/upload" && endpoint != "/api/play"))
                 {
                     WriteJson(response, 404, new Dictionary<string, object> { { "ok", false }, { "error", "Not found." } });
                     return;
@@ -142,6 +143,18 @@ namespace MakeraZ1TcpBridge
                 var serializer = new JavaScriptSerializer();
                 serializer.MaxJsonLength = 16 * 1024 * 1024;
                 var body = serializer.Deserialize<Dictionary<string, object>>(raw);
+                if (endpoint == "/api/play")
+                {
+                    string path = body != null && body.ContainsKey("path") ? Convert.ToString(body["path"]) : "";
+                    if (!Regex.IsMatch(path, "^/sd/gcodes/[A-Za-z0-9_.-]{1,120}\\.(nc|ngc|gcode|tap)$", RegexOptions.IgnoreCase))
+                        throw new InvalidDataException("Playback path must be an NC file in /sd/gcodes.");
+                    UploadSession playbackSession;
+                    lock (UploadSessionLock) playbackSession = activeUploadSession;
+                    if (playbackSession == null) throw new InvalidOperationException("Connect gSender to the Z1 through this bridge before starting local playback.");
+                    Dictionary<string, object> playback = playbackSession.Play(path);
+                    WriteJson(response, 200, playback);
+                    return;
+                }
                 string name = body != null && body.ContainsKey("name") ? Convert.ToString(body["name"]) : "";
                 string content = body != null && body.ContainsKey("content") ? Convert.ToString(body["content"]) : "";
                 if (!Regex.IsMatch(name, "^[A-Za-z0-9_.-]{1,120}\\.(nc|ngc|gcode|tap)$", RegexOptions.IgnoreCase))
@@ -179,6 +192,8 @@ namespace MakeraZ1TcpBridge
             private readonly Queue<byte[]> frames = new Queue<byte[]>();
             private readonly object sync = new object();
             public volatile bool Active;
+            private bool playbackPending;
+            public volatile bool CommandActive;
 
             public UploadSession(NetworkStream networkStream) { stream = networkStream; }
 
@@ -229,7 +244,7 @@ namespace MakeraZ1TcpBridge
             {
                 lock (sync)
                 {
-                    if (Active) throw new InvalidOperationException("An SD-card upload is already in progress.");
+                    if (Active || CommandActive) throw new InvalidOperationException("A Z1 upload or local playback command is already in progress.");
                     frames.Clear();
                     Active = true;
                 }
@@ -284,6 +299,52 @@ namespace MakeraZ1TcpBridge
                     return new Dictionary<string, object> { { "ok", true }, { "name", name }, { "path", relativePath }, { "bytes", bytes.Length }, { "listed", true }, { "reported", report } };
                 }
                 finally { lock (sync) { Active = false; Monitor.PulseAll(sync); } }
+            }
+
+            public bool AcceptPlaybackReply(byte[] payload)
+            {
+                if (payload.Length == 0 || payload[0] != 0x90) return false;
+                lock (sync)
+                {
+                    if (!playbackPending) return false;
+                    frames.Enqueue(payload);
+                    Monitor.PulseAll(sync);
+                    return true;
+                }
+            }
+
+            public Dictionary<string, object> Play(string path)
+            {
+                lock (sync)
+                {
+                    if (Active || CommandActive) throw new InvalidOperationException("A Z1 upload or local playback command is already in progress.");
+                    frames.Clear();
+                    CommandActive = true;
+                    playbackPending = true;
+                }
+                try
+                {
+                    string command = "play " + path;
+                    Log("Sending Z1 local playback command through the active gSender session: " + command);
+                    SendPayload(stream, Join(new byte[] { 0xA2 }, Encoding.ASCII.GetBytes(command)));
+                    var reply = new StringBuilder();
+                    DateTime deadline = DateTime.UtcNow.AddSeconds(8);
+                    while (true)
+                    {
+                        byte[] payload = WaitFor(delegate(byte[] p) { return p.Length > 0 && p[0] == 0x90; }, "acknowledge local playback", (int)Math.Max(1, (deadline - DateTime.UtcNow).TotalMilliseconds));
+                        string text = payload.Length > 1 ? Encoding.UTF8.GetString(payload, 1, payload.Length - 1) : "";
+                        reply.Append(text);
+                        string accumulated = reply.ToString();
+                        string failure = Regex.Match(accumulated, "(?im)^.*(?:file\\.open failed|currently printing|not homed|ALARM:|error:).*$").Value.Trim();
+                        if (!String.IsNullOrEmpty(failure)) throw new IOException("Z1 rejected local playback: " + failure);
+                        if (Regex.IsMatch(accumulated, "(?im)^\\s*ok\\s*$"))
+                        {
+                            Log("Z1 acknowledged local playback command for " + path);
+                            return new Dictionary<string, object> { { "ok", true }, { "sent", true }, { "acknowledged", true }, { "path", path }, { "reply", accumulated.Trim() } };
+                        }
+                    }
+                }
+                finally { lock (sync) { playbackPending = false; CommandActive = false; frames.Clear(); Monitor.PulseAll(sync); } }
             }
 
             private static uint ReadUInt32(byte[] data, int offset)
@@ -527,6 +588,7 @@ namespace MakeraZ1TcpBridge
                             UploadSession currentUpload;
                             lock (UploadSessionLock) currentUpload = activeUploadSession;
                             if (currentUpload != null && currentUpload.Active && currentUpload.Accept(payload)) continue;
+                            if (currentUpload != null && currentUpload.AcceptPlaybackReply(payload)) continue;
                             if (payload.Length == 0 || (payload[0] != 0x80 && payload[0] != 0x81 && payload[0] != 0x82 && payload[0] != 0x90)) continue;
                             byte[] text = new byte[payload.Length - 1];
                             Buffer.BlockCopy(payload, 1, text, 0, text.Length);
@@ -570,7 +632,7 @@ namespace MakeraZ1TcpBridge
                         {
                             UploadSession currentUpload;
                             lock (UploadSessionLock) currentUpload = activeUploadSession;
-                            if (currentUpload != null && currentUpload.Active) continue;
+                            if (currentUpload != null && (currentUpload.Active || currentUpload.CommandActive)) continue;
                             // Makera Studio keeps its diagnostics session active by
                             // polling this command about every 700 ms. Without it,
                             // accessory G-code can be acknowledged without changing
@@ -597,7 +659,7 @@ namespace MakeraZ1TcpBridge
                 {
                     UploadSession currentUpload;
                     lock (UploadSessionLock) currentUpload = activeUploadSession;
-                    if (currentUpload != null && currentUpload.Active) { Thread.Sleep(20); continue; }
+                    if (currentUpload != null && (currentUpload.Active || currentUpload.CommandActive)) { Thread.Sleep(20); continue; }
                     int count;
                     try { count = localStream.Read(incoming, 0, incoming.Length); }
                     catch (IOException ex)
