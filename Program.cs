@@ -237,7 +237,8 @@ namespace MakeraZ1TcpBridge
                 {
                     string hash;
                     using (MD5 md5 = MD5.Create()) hash = BitConverter.ToString(md5.ComputeHash(bytes)).Replace("-", "").ToLowerInvariant();
-                    SendPayload(stream, Join(new byte[] { 0xB0 }, Encoding.ASCII.GetBytes("upload /sd/" + name)));
+                    const string sdDirectory = "/sd/gcodes/";
+                    SendPayload(stream, Join(new byte[] { 0xB0 }, Encoding.ASCII.GetBytes("upload " + sdDirectory + name)));
                     SendPayload(stream, Join(new byte[] { 0xB1 }, Encoding.ASCII.GetBytes(hash)));
                     WaitFor(delegate(byte[] p) { return p[0] == 0xB2; }, "acknowledge the transfer header", 15000);
                     int chunkSize = 8192;
@@ -265,7 +266,7 @@ namespace MakeraZ1TcpBridge
                         return text.IndexOf("upload success", StringComparison.OrdinalIgnoreCase) >= 0;
                     }, "report upload success", 20000);
                     string report = completion.Length > 1 ? Encoding.UTF8.GetString(completion, 1, completion.Length - 1).Trim() : "";
-                    SendPayload(stream, Join(new byte[] { 0xA2 }, Encoding.ASCII.GetBytes("ls -e -s /sd\n")));
+                    SendPayload(stream, Join(new byte[] { 0xA2 }, Encoding.ASCII.GetBytes("ls -e -s " + sdDirectory + "\n")));
                     var listing = new StringBuilder();
                     DateTime listingDeadline = DateTime.UtcNow.AddSeconds(12);
                     bool listingEnded = false;
@@ -278,8 +279,9 @@ namespace MakeraZ1TcpBridge
                     string list = listing.ToString();
                     bool listed = list.IndexOf(name, StringComparison.Ordinal) >= 0 && list.IndexOf(bytes.Length.ToString(), StringComparison.Ordinal) >= 0;
                     if (!listed) throw new IOException("Z1 reported upload success, but its SD listing did not confirm the exact filename and byte count.");
-                    Log("Uploaded and verified /sd/" + name + " through the active gSender Z1 connection (" + bytes.Length + " bytes)");
-                    return new Dictionary<string, object> { { "ok", true }, { "name", name }, { "path", name }, { "bytes", bytes.Length }, { "listed", true }, { "reported", report } };
+                    string relativePath = "gcodes/" + name;
+                    Log("Uploaded and verified " + sdDirectory + name + " through the active gSender Z1 connection (" + bytes.Length + " bytes)");
+                    return new Dictionary<string, object> { { "ok", true }, { "name", name }, { "path", relativePath }, { "bytes", bytes.Length }, { "listed", true }, { "reported", report } };
                 }
                 finally { lock (sync) { Active = false; Monitor.PulseAll(sync); } }
             }

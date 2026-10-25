@@ -8,7 +8,7 @@ This bridge supports the Makera Z1 protocol. It does not currently support other
 
 ## Quick start
 
-1. Download and extract `makera-z1-tcp-bridge-v0.3.15.zip`.
+1. Download and extract `makera-z1-tcp-bridge-v0.3.16.zip`.
 2. Open PowerShell **as Administrator**, change to the extracted folder, and run `Install-Z1Bridge.ps1`.
 3. Enter the Z1 IP address and port when prompted. The usual Z1 port is `2222`.
 4. In gSender, select **Ethernet** and connect to host `127.0.0.1`, port `2323`, using the GRBL profile.
@@ -24,9 +24,9 @@ The installer creates `C:\makera_z1_tcp_bridge`, writes `config.yaml`, and insta
 - Maps Z1 sensor fields to GRBL `Pn:` tokens where possible and preserves extended values in a `Z1:` status field.
 - Polls Z1 diagnostics while gSender is connected to refresh accessory and sensor status.
 - Provides a loopback-only upload API at `http://127.0.0.1:2324/api/upload`. Uploads are multiplexed over the active gSender-to-Z1 connection, so gSender does not have to disconnect while the SD file is transferred.
-- Confirms the upload in the Z1 SD root before the sender starts local playback with `M32 <filename>`.
+- Uploads into `/sd/gcodes/` and confirms the file there before local playback.
 
-The bridge translates individual commands. Probing and tool changes remain the responsibility of the sender and are sent as G-code/controller commands. The CNC Job Setup plugin uses the bridge upload API, which places the file at `/sd/<filename>`, then sends `M32 <filename>` through gSender to select and run the verified SD file. gSender remains connected to monitor controller state; the sender does not stream the job's G-code lines.
+The bridge translates individual commands. Probing and tool changes remain the responsibility of the sender and are sent as G-code/controller commands. The CNC Job Setup plugin uses the bridge upload API, which places the file at `/sd/gcodes/<filename>`, then sends `M32 gcodes/<filename>` through gSender. The Z1 firmware prepends `/sd/` to the M32 argument, so the relative path must include `gcodes/`. gSender remains connected to monitor controller state; the sender does not stream the job's G-code lines.
 
 ## Configuration and troubleshooting
 
