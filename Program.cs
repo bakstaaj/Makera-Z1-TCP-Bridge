@@ -3,9 +3,11 @@ using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Web.Script.Serialization;
 
 namespace MakeraZ1TcpBridge
 {
@@ -17,6 +19,9 @@ namespace MakeraZ1TcpBridge
         private static readonly object LocalWriteLock = new object();
         private static bool stopping;
         private static bool debugLogging;
+        private static readonly object UploadSessionLock = new object();
+        private static UploadSession activeUploadSession;
+        private static HttpListener uploadListener;
 
         private sealed class Config
         {
@@ -61,7 +66,8 @@ namespace MakeraZ1TcpBridge
                 TcpListener listener = new TcpListener(IPAddress.Loopback, config.ListenPort);
                 listener.Start(1);
                 Log("Listening on 127.0.0.1:" + config.ListenPort + "; Z1 target " + config.Host + ":" + config.Port);
-                Console.CancelKeyPress += delegate(object sender, ConsoleCancelEventArgs e) { e.Cancel = true; stopping = true; listener.Stop(); };
+                StartUploadApi();
+                Console.CancelKeyPress += delegate(object sender, ConsoleCancelEventArgs e) { e.Cancel = true; stopping = true; listener.Stop(); try { uploadListener.Stop(); } catch { } };
                 while (!stopping)
                 {
                     TcpClient client;
@@ -79,6 +85,215 @@ namespace MakeraZ1TcpBridge
             {
                 Log("Fatal: " + ex);
                 return 1;
+            }
+        }
+
+        private static void StartUploadApi()
+        {
+            uploadListener = new HttpListener();
+            uploadListener.Prefixes.Add("http://127.0.0.1:2324/");
+            uploadListener.Start();
+            Thread api = new Thread(delegate()
+            {
+                while (!stopping && uploadListener.IsListening)
+                {
+                    HttpListenerContext context;
+                    try { context = uploadListener.GetContext(); }
+                    catch (HttpListenerException) { break; }
+                    catch (ObjectDisposedException) { break; }
+                    ThreadPool.QueueUserWorkItem(delegate { HandleUploadRequest(context); });
+                }
+            });
+            api.IsBackground = true;
+            api.Start();
+            Log("Local upload API listening on http://127.0.0.1:2324/api/upload (uses active gSender Z1 session)");
+        }
+
+        private static void HandleUploadRequest(HttpListenerContext context)
+        {
+            HttpListenerResponse response = context.Response;
+            try
+            {
+                string origin = context.Request.Headers["Origin"];
+                // Electron may load gSender plugin content from file://, which browsers
+                // serialize as the opaque Origin "null". The API is loopback-only and
+                // only accepts a constrained NC-file upload, so explicitly allow it.
+                bool allowedOrigin = String.Equals(origin, "null", StringComparison.OrdinalIgnoreCase) ||
+                    (!String.IsNullOrEmpty(origin) && Regex.IsMatch(origin, "^https?://(127\\.0\\.0\\.1|localhost)(:\\d+)?$", RegexOptions.IgnoreCase));
+                Log("Local upload API request: " + context.Request.HttpMethod + " " + context.Request.Url.AbsolutePath + " Origin=" + (origin ?? "<none>"));
+                if (!String.IsNullOrEmpty(origin) && allowedOrigin)
+                {
+                    response.Headers["Access-Control-Allow-Origin"] = origin;
+                    response.Headers["Vary"] = "Origin";
+                    response.Headers["Access-Control-Allow-Private-Network"] = "true";
+                }
+                response.Headers["Access-Control-Allow-Methods"] = "POST, OPTIONS";
+                response.Headers["Access-Control-Allow-Headers"] = "Content-Type";
+                if (context.Request.HttpMethod == "OPTIONS") { response.StatusCode = 204; return; }
+                if (context.Request.HttpMethod != "POST" || context.Request.Url.AbsolutePath != "/api/upload")
+                {
+                    WriteJson(response, 404, new Dictionary<string, object> { { "ok", false }, { "error", "Not found." } });
+                    return;
+                }
+                if (context.Request.ContentLength64 < 1 || context.Request.ContentLength64 > 12 * 1024 * 1024)
+                    throw new InvalidDataException("Upload request must be between 1 byte and 12 MiB.");
+                string raw;
+                using (var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding ?? Encoding.UTF8)) raw = reader.ReadToEnd();
+                var serializer = new JavaScriptSerializer();
+                serializer.MaxJsonLength = 16 * 1024 * 1024;
+                var body = serializer.Deserialize<Dictionary<string, object>>(raw);
+                string name = body != null && body.ContainsKey("name") ? Convert.ToString(body["name"]) : "";
+                string content = body != null && body.ContainsKey("content") ? Convert.ToString(body["content"]) : "";
+                if (!Regex.IsMatch(name, "^[A-Za-z0-9_.-]{1,120}\\.(nc|ngc|gcode|tap)$", RegexOptions.IgnoreCase))
+                    throw new InvalidDataException("Filename must use letters, numbers, periods, underscores, or hyphens and end in .nc, .ngc, .gcode, or .tap.");
+                if (String.IsNullOrEmpty(content)) throw new InvalidDataException("The current G-code file is empty or unavailable.");
+                byte[] bytes = Encoding.UTF8.GetBytes(content);
+                if (bytes.Length > 10 * 1024 * 1024) throw new InvalidDataException("The G-code file exceeds the 10 MiB upload limit.");
+                UploadSession session;
+                lock (UploadSessionLock) session = activeUploadSession;
+                if (session == null) throw new InvalidOperationException("Connect gSender to the Z1 through this bridge before uploading.");
+                Dictionary<string, object> result = session.Upload(name, bytes);
+                WriteJson(response, 200, result);
+            }
+            catch (Exception ex)
+            {
+                Log("Local upload API error: " + ex.Message);
+                try { WriteJson(response, 400, new Dictionary<string, object> { { "ok", false }, { "error", ex.Message } }); } catch { }
+            }
+            finally { try { response.Close(); } catch { } }
+        }
+
+        private static void WriteJson(HttpListenerResponse response, int status, object value)
+        {
+            byte[] data = Encoding.UTF8.GetBytes(new JavaScriptSerializer().Serialize(value));
+            response.StatusCode = status;
+            response.ContentType = "application/json; charset=utf-8";
+            response.ContentLength64 = data.Length;
+            response.Headers["Cache-Control"] = "no-store";
+            response.OutputStream.Write(data, 0, data.Length);
+        }
+
+        private sealed class UploadSession
+        {
+            private readonly NetworkStream stream;
+            private readonly Queue<byte[]> frames = new Queue<byte[]>();
+            private readonly object sync = new object();
+            public volatile bool Active;
+
+            public UploadSession(NetworkStream networkStream) { stream = networkStream; }
+
+            public bool Accept(byte[] payload)
+            {
+                if (payload.Length == 0) return false;
+                bool transfer = payload[0] == 0xB1 || payload[0] == 0xB2 || payload[0] == 0xB3 || payload[0] == 0xB4 || payload[0] == 0x83 || payload[0] == 0x84;
+                if (payload[0] == 0x90)
+                {
+                    string text = payload.Length > 1 ? Encoding.UTF8.GetString(payload, 1, payload.Length - 1) : "";
+                    transfer = text.IndexOf("upload success", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        text.IndexOf("upload failed", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        text.IndexOf("canceled by remote", StringComparison.OrdinalIgnoreCase) >= 0;
+                }
+                if (!transfer) return false;
+                lock (sync) { frames.Enqueue(payload); Monitor.PulseAll(sync); }
+                return true;
+            }
+
+            private byte[] WaitFor(Func<byte[], bool> predicate, string description, int timeoutMs)
+            {
+                DateTime deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+                lock (sync)
+                {
+                    while (true)
+                    {
+                        int count = frames.Count;
+                        var keep = new Queue<byte[]>();
+                        while (count-- > 0)
+                        {
+                            byte[] payload = frames.Dequeue();
+                            if (predicate(payload))
+                            {
+                                while (keep.Count > 0) frames.Enqueue(keep.Dequeue());
+                                return payload;
+                            }
+                            keep.Enqueue(payload);
+                        }
+                        while (keep.Count > 0) frames.Enqueue(keep.Dequeue());
+                        int remaining = (int)(deadline - DateTime.UtcNow).TotalMilliseconds;
+                        if (remaining <= 0) throw new TimeoutException("Timed out waiting for the Z1 to " + description + ".");
+                        Monitor.Wait(sync, Math.Min(remaining, 1000));
+                    }
+                }
+            }
+
+            public Dictionary<string, object> Upload(string name, byte[] bytes)
+            {
+                lock (sync)
+                {
+                    if (Active) throw new InvalidOperationException("An SD-card upload is already in progress.");
+                    frames.Clear();
+                    Active = true;
+                }
+                try
+                {
+                    string hash;
+                    using (MD5 md5 = MD5.Create()) hash = BitConverter.ToString(md5.ComputeHash(bytes)).Replace("-", "").ToLowerInvariant();
+                    SendPayload(stream, Join(new byte[] { 0xB0 }, Encoding.ASCII.GetBytes("upload /sd/" + name)));
+                    SendPayload(stream, Join(new byte[] { 0xB1 }, Encoding.ASCII.GetBytes(hash)));
+                    WaitFor(delegate(byte[] p) { return p[0] == 0xB2; }, "acknowledge the transfer header", 15000);
+                    int chunkSize = 8192;
+                    int chunks = (bytes.Length + chunkSize - 1) / chunkSize;
+                    SendPayload(stream, new byte[] { 0xB2, (byte)(chunks >> 24), (byte)(chunks >> 16), (byte)(chunks >> 8), (byte)chunks, (byte)(chunkSize >> 8), (byte)chunkSize });
+                    for (int index = 0; index < chunks; index++)
+                    {
+                        int expected = index + 1;
+                        WaitFor(delegate(byte[] p) { return p.Length >= 5 && p[0] == 0xB3 && ReadUInt32(p, 1) == (uint)expected; }, "request upload block " + expected, 30000);
+                        int start = index * chunkSize;
+                        int length = Math.Min(chunkSize, bytes.Length - start);
+                        byte[] block = new byte[5 + length];
+                        block[0] = 0xB3;
+                        block[1] = (byte)(expected >> 24); block[2] = (byte)(expected >> 16); block[3] = (byte)(expected >> 8); block[4] = (byte)expected;
+                        Buffer.BlockCopy(bytes, start, block, 5, length);
+                        SendPayload(stream, block);
+                    }
+                    WaitFor(delegate(byte[] p) { return p[0] == 0xB4; }, "finish the upload", 30000);
+                    byte[] completion = WaitFor(delegate(byte[] p)
+                    {
+                        if (p[0] != 0x90) return false;
+                        string text = p.Length > 1 ? Encoding.UTF8.GetString(p, 1, p.Length - 1) : "";
+                        if (text.IndexOf("upload failed", StringComparison.OrdinalIgnoreCase) >= 0 || text.IndexOf("canceled by remote", StringComparison.OrdinalIgnoreCase) >= 0)
+                            throw new IOException("Z1 reported upload failure: " + text.Trim());
+                        return text.IndexOf("upload success", StringComparison.OrdinalIgnoreCase) >= 0;
+                    }, "report upload success", 20000);
+                    string report = completion.Length > 1 ? Encoding.UTF8.GetString(completion, 1, completion.Length - 1).Trim() : "";
+                    SendPayload(stream, Join(new byte[] { 0xA2 }, Encoding.ASCII.GetBytes("ls -e -s /sd\n")));
+                    var listing = new StringBuilder();
+                    DateTime listingDeadline = DateTime.UtcNow.AddSeconds(12);
+                    bool listingEnded = false;
+                    while (!listingEnded)
+                    {
+                        byte[] item = WaitFor(delegate(byte[] p) { return p[0] == 0x83 || p[0] == 0x84; }, "finish refreshing the Z1 file list", (int)Math.Max(1, (listingDeadline - DateTime.UtcNow).TotalMilliseconds));
+                        if (item[0] == 0x84) listingEnded = true;
+                        else if (item.Length > 1) listing.Append(Encoding.UTF8.GetString(item, 1, item.Length - 1));
+                    }
+                    string list = listing.ToString();
+                    bool listed = list.IndexOf(name, StringComparison.Ordinal) >= 0 && list.IndexOf(bytes.Length.ToString(), StringComparison.Ordinal) >= 0;
+                    if (!listed) throw new IOException("Z1 reported upload success, but its SD listing did not confirm the exact filename and byte count.");
+                    Log("Uploaded and verified /sd/" + name + " through the active gSender Z1 connection (" + bytes.Length + " bytes)");
+                    return new Dictionary<string, object> { { "ok", true }, { "name", name }, { "path", name }, { "bytes", bytes.Length }, { "listed", true }, { "reported", report } };
+                }
+                finally { lock (sync) { Active = false; Monitor.PulseAll(sync); } }
+            }
+
+            private static uint ReadUInt32(byte[] data, int offset)
+            {
+                return ((uint)data[offset] << 24) | ((uint)data[offset + 1] << 16) | ((uint)data[offset + 2] << 8) | data[offset + 3];
+            }
+
+            private static byte[] Join(byte[] first, byte[] second)
+            {
+                byte[] result = new byte[first.Length + second.Length];
+                Buffer.BlockCopy(first, 0, result, 0, first.Length); Buffer.BlockCopy(second, 0, result, first.Length, second.Length);
+                return result;
             }
         }
 
@@ -278,6 +493,7 @@ namespace MakeraZ1TcpBridge
             try { sessionSettings = BuildSessionSettings(config, ReadZ1ConfigText(config)); }
             catch (Exception ex) { Log("Could not read live /sd/config.txt; using YAML fallback profile: " + ex.Message); }
             TcpClient z1 = new TcpClient();
+            UploadSession uploadSession = null;
             try
             {
                 z1.ReceiveTimeout = 500;
@@ -286,6 +502,8 @@ namespace MakeraZ1TcpBridge
                 NetworkStream localStream = local.GetStream();
                 NetworkStream z1Stream = z1.GetStream();
                 var frameReader = new FrameReader(z1Stream);
+                uploadSession = new UploadSession(z1Stream);
+                lock (UploadSessionLock) activeUploadSession = uploadSession;
                 var done = new ManualResetEvent(false);
                 PositionSnapshot positions = new PositionSnapshot();
                 SensorSnapshot sensors = new SensorSnapshot();
@@ -304,6 +522,9 @@ namespace MakeraZ1TcpBridge
                                 if (se != null && (se.SocketErrorCode == SocketError.TimedOut || se.SocketErrorCode == SocketError.WouldBlock)) continue;
                                 throw;
                             }
+                            UploadSession currentUpload;
+                            lock (UploadSessionLock) currentUpload = activeUploadSession;
+                            if (currentUpload != null && currentUpload.Active && currentUpload.Accept(payload)) continue;
                             if (payload.Length == 0 || (payload[0] != 0x80 && payload[0] != 0x81 && payload[0] != 0x82 && payload[0] != 0x90)) continue;
                             byte[] text = new byte[payload.Length - 1];
                             Buffer.BlockCopy(payload, 1, text, 0, text.Length);
@@ -345,6 +566,9 @@ namespace MakeraZ1TcpBridge
                     {
                         while (!done.WaitOne(700))
                         {
+                            UploadSession currentUpload;
+                            lock (UploadSessionLock) currentUpload = activeUploadSession;
+                            if (currentUpload != null && currentUpload.Active) continue;
                             // Makera Studio keeps its diagnostics session active by
                             // polling this command about every 700 ms. Without it,
                             // accessory G-code can be acknowledged without changing
@@ -369,6 +593,9 @@ namespace MakeraZ1TcpBridge
                 byte[] incoming = new byte[4096];
                 while (!done.WaitOne(0))
                 {
+                    UploadSession currentUpload;
+                    lock (UploadSessionLock) currentUpload = activeUploadSession;
+                    if (currentUpload != null && currentUpload.Active) { Thread.Sleep(20); continue; }
                     int count;
                     try { count = localStream.Read(incoming, 0, incoming.Length); }
                     catch (IOException ex)
@@ -422,7 +649,11 @@ namespace MakeraZ1TcpBridge
                 catch { }
                 Log("Session ended: " + ex.Message);
             }
-            finally { z1.Close(); }
+            finally
+            {
+                lock (UploadSessionLock) if (Object.ReferenceEquals(activeUploadSession, uploadSession)) activeUploadSession = null;
+                z1.Close();
+            }
         }
 
         private static void FlushLine(List<byte> line, NetworkStream stream, NetworkStream localStream, Config config, SortedDictionary<int, string> sessionSettings, PositionSnapshot positions, ref int pendingVersionReplies)
