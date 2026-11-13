@@ -594,6 +594,7 @@ namespace MakeraZ1TcpBridge
                             Buffer.BlockCopy(payload, 1, text, 0, text.Length);
                             string message = Encoding.UTF8.GetString(text).Replace("\r\n", "\n").Replace("\r", "\n");
                             if (message.Length == 0) continue;
+                            message = NormalizeModalReports(message);
                             if (payload[0] == 0x82)
                             {
                                 UpdateSensors(sensors, message);
@@ -720,6 +721,12 @@ namespace MakeraZ1TcpBridge
             }
         }
 
+        private static string NormalizeModalReports(string message)
+        {
+            // Z1 reports modal state as [G0 G54 ...]; gSender expects GRBL's [GC:...] form.
+            return Regex.Replace(message, @"(?m)^[ \t]*\[(G(?:0|1|2|3)\b[^\]\r\n]*)\][ \t]*$", "[GC:$1]", RegexOptions.IgnoreCase);
+        }
+
         private static void FlushLine(List<byte> line, NetworkStream stream, NetworkStream localStream, Config config, SortedDictionary<int, string> sessionSettings, PositionSnapshot positions, ref int pendingVersionReplies)
         {
             if (line.Count == 0) return;
@@ -789,6 +796,8 @@ namespace MakeraZ1TcpBridge
             bool absolute = false;
             bool machineCoordinates = false;
             bool hasDistanceMode = false;
+            bool hasFeedRate = false;
+            double feedRate = 0;
             double[] requested = new double[5];
             bool[] specified = new bool[5];
             foreach (Match match in matches)
@@ -811,16 +820,23 @@ namespace MakeraZ1TcpBridge
                 else if (letter == 'F')
                 {
                     if (value <= 0) { error = "jog feed rate must be positive"; return false; }
+                    feedRate = value;
+                    hasFeedRate = true;
                 }
                 else
                 {
                     int axis = letter == 'X' ? 0 : letter == 'Y' ? 1 : letter == 'Z' ? 2 : letter == 'A' ? 3 : -1;
                     if (axis < 0 || axis == 3 && !config.RotaryInstalled) { error = "unsupported axis in GRBL jog command: " + letter; return false; }
-                    requested[axis] = metric ? value : value * 25.4;
+                    requested[axis] = value;
                     specified[axis] = true;
                 }
             }
+            double unitScale = metric ? 1 : 25.4;
+            for (int axis = 0; axis < requested.Length; axis++)
+                if (specified[axis]) requested[axis] *= unitScale;
+            feedRate *= unitScale;
             if (!hasDistanceMode) { error = "GRBL jog must specify G90 or G91"; return false; }
+            if (!hasFeedRate) { error = "GRBL jog must specify an F feed rate"; return false; }
             bool anyAxis = false;
             for (int i = 0; i < specified.Length; i++) anyAxis |= specified[i];
             if (!anyAxis) { error = "GRBL jog must specify at least one axis"; return false; }
@@ -833,9 +849,9 @@ namespace MakeraZ1TcpBridge
                 if (reported == null || reported.Length < 4) { error = "waiting for a live Z1 position report before jogging"; return false; }
                 position = (double[])(projected ?? reported).Clone();
             }
-            var words = new StringBuilder("G21 G90 ");
+            var words = new StringBuilder("G21 G90 G94 ");
             if (machineCoordinates) words.Append("G53 ");
-            words.Append("G0");
+            words.Append("G1");
             for (int axis = 0; axis < 4; axis++)
             {
                 if (!specified[axis]) continue;
@@ -843,6 +859,7 @@ namespace MakeraZ1TcpBridge
                 position[axis] = target;
                 words.Append(' ').Append("XYZA"[axis]).Append(target.ToString("0.########", System.Globalization.CultureInfo.InvariantCulture));
             }
+            words.Append(" F").Append(feedRate.ToString("0.########", System.Globalization.CultureInfo.InvariantCulture));
             translated = words.ToString();
             lock (positions.Sync)
             {
