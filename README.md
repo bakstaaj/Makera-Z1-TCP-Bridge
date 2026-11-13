@@ -8,9 +8,9 @@ This bridge supports the Makera Z1 protocol. It does not currently support other
 
 ## Quick start
 
-1. Download and extract `makera-z1-tcp-bridge-v0.3.17.zip`.
+1. Download and extract the [v0.3.18 release package](https://github.com/bakstaaj/Makera-Z1-TCP-Bridge/releases/download/makera-z1-tcp-bridge-v0.3.18/makera-z1-tcp-bridge-v0.3.18.zip). Verify it with the adjacent `.sha256` file if desired.
 2. Open PowerShell **as Administrator**, change to the extracted folder, and run `Install-Z1Bridge.ps1`.
-3. Enter the Z1 IP address and port when prompted. The usual Z1 port is `2222`.
+3. Choose automatic discovery when prompted. The installer listens for Z1 beacons on UDP `3333`, then lets you select a detected machine. If discovery does not find one, enter its IP address and TCP port manually; the usual Z1 port is `2222`.
 4. In gSender, select **Ethernet** and connect to host `127.0.0.1`, port `2323`, using the GRBL profile.
 
 The installer creates `C:\makera_z1_tcp_bridge`, writes `config.yaml`, and installs the `MakeraZ1TcpBridge` Windows service. These service and data-directory names are retained for in-place updates. The executable does not require a separate Python installation. YAML stores the Z1 connection, local listener, optional rotary setting, debug logging, and fallback GRBL profile.
@@ -66,9 +66,14 @@ Protocol translation is based on captured Makera Studio traffic and the publishe
 
 ## Package contents
 
-The ZIP includes the prebuilt bridge executable, NSSM service wrapper and notice, installer, update/uninstall scripts, C# source, build/package scripts, README, and screenshot.
+The ZIP includes the prebuilt bridge executable, NSSM service wrapper and notice, installer, Z1 discovery script, update/uninstall scripts, C# source, build/package scripts, README, and screenshot.
 
 ## Release notes
+
+### 0.3.18
+
+- Added UDP 3333 Makera Z1 discovery to bridge setup, with selection when multiple machines are found and manual address entry as a fallback.
+- Published package: [makera-z1-tcp-bridge-v0.3.18.zip](https://github.com/bakstaaj/Makera-Z1-TCP-Bridge/releases/download/makera-z1-tcp-bridge-v0.3.18/makera-z1-tcp-bridge-v0.3.18.zip).
 
 ### 0.3.17
 

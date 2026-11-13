@@ -6,6 +6,7 @@ $ConfigPath = Join-Path $InstallDir 'config.yaml'
 $NssmSource = Join-Path $PSScriptRoot 'nssm.exe'
 $NssmNotice = Join-Path $PSScriptRoot 'NSSM-NOTICE.txt'
 $BridgeSource = Join-Path $PSScriptRoot 'MakeraZ1TcpBridge.exe'
+$DiscoveryScript = Join-Path $PSScriptRoot 'Discover-Z1.ps1'
 
 function Read-DefaultValue([string]$Prompt, [string]$Default) {
     $answer = Read-Host "$Prompt [$Default]"
@@ -60,13 +61,40 @@ try {
         if ($savedSettings.Count -gt 0) { $grblSettings = $savedSettings }
     }
 
-    $machineIp = Read-DefaultValue 'Makera Z1 IPv4 address' $existingHost
+    $machineIp = $existingHost
+    $machinePort = [int]$existingPort
+    if (Test-Path -LiteralPath $DiscoveryScript) {
+        $discoverAnswer = Read-DefaultValue 'Search the local network for Makera Z1 machines? (Y/n)' 'Y'
+        if ($discoverAnswer -notmatch '^(?i:n|no)$') {
+            . $DiscoveryScript
+            Write-Host 'Listening for Z1 announcements on UDP 3333...' -ForegroundColor Cyan
+            $foundDevices = @(Find-MakeraZ1 -ListenSeconds 5)
+            if ($foundDevices.Count -eq 1) {
+                $machineIp = $foundDevices[0].IPAddress
+                $machinePort = $foundDevices[0].TcpPort
+                Write-Host "Found Makera Z1 at $machineIp`:$machinePort" -ForegroundColor Green
+            } elseif ($foundDevices.Count -gt 1) {
+                for ($i = 0; $i -lt $foundDevices.Count; $i++) {
+                    Write-Host "[$($i + 1)] $($foundDevices[$i].Model)  $($foundDevices[$i].IPAddress):$($foundDevices[$i].TcpPort)  [$($foundDevices[$i].Status)]"
+                }
+                $selection = Read-DefaultValue 'Select a machine number, or press Enter to enter an address manually' ''
+                $selectedIndex = 0
+                if ([int]::TryParse($selection, [ref]$selectedIndex) -and $selectedIndex -ge 1 -and $selectedIndex -le $foundDevices.Count) {
+                    $machineIp = $foundDevices[$selectedIndex - 1].IPAddress
+                    $machinePort = $foundDevices[$selectedIndex - 1].TcpPort
+                }
+            } else {
+                Write-Host 'No Z1 announcement received. Enter the address manually.' -ForegroundColor Yellow
+            }
+        }
+    }
+
+    $machineIp = Read-DefaultValue 'Makera Z1 IPv4 address' $machineIp
     $parsedIp = $null
     if (-not [System.Net.IPAddress]::TryParse($machineIp, [ref]$parsedIp) -or $parsedIp.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) {
         throw "Invalid IPv4 address: $machineIp"
     }
-    $machinePortText = Read-DefaultValue 'Makera Z1 TCP port' $existingPort
-    $machinePort = 0
+    $machinePortText = Read-DefaultValue 'Makera Z1 TCP port' ([string]$machinePort)
     if (-not [int]::TryParse($machinePortText, [ref]$machinePort) -or $machinePort -lt 1 -or $machinePort -gt 65535) {
         throw "Invalid TCP port: $machinePortText"
     }
