@@ -7,6 +7,7 @@ $NssmSource = Join-Path $PSScriptRoot 'nssm.exe'
 $NssmNotice = Join-Path $PSScriptRoot 'NSSM-NOTICE.txt'
 $BridgeSource = Join-Path $PSScriptRoot 'MakeraZ1TcpBridge.exe'
 $DiscoveryScript = Join-Path $PSScriptRoot 'Discover-Z1.ps1'
+$ConfigureScript = Join-Path $PSScriptRoot 'Configure-Z1Bridge.ps1'
 
 function Read-DefaultValue([string]$Prompt, [string]$Default) {
     $answer = Read-Host "$Prompt [$Default]"
@@ -126,7 +127,25 @@ try {
     New-Item -ItemType Directory -Path (Join-Path $InstallDir 'logs') -Force | Out-Null
     Copy-Item -LiteralPath $BridgeSource -Destination (Join-Path $InstallDir 'MakeraZ1TcpBridge.exe') -Force
     Copy-Item -LiteralPath $NssmSource -Destination (Join-Path $InstallDir 'nssm.exe') -Force
+    foreach ($script in @($DiscoveryScript, $ConfigureScript)) {
+        if (-not (Test-Path -LiteralPath $script)) { throw "Required bridge UI file is missing: $script" }
+        Copy-Item -LiteralPath $script -Destination $InstallDir -Force
+    }
     if (Test-Path -LiteralPath $NssmNotice) { Copy-Item -LiteralPath $NssmNotice -Destination (Join-Path $InstallDir 'NSSM-NOTICE.txt') -Force }
+
+    $programs = [Environment]::GetFolderPath('CommonPrograms')
+    $shortcutDir = Join-Path $programs 'Makera Z1 TCP Bridge'
+    New-Item -ItemType Directory -Path $shortcutDir -Force | Out-Null
+    $shortcutPath = Join-Path $shortcutDir 'Configure Makera Z1 TCP Bridge.lnk'
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($shortcutPath)
+    $shortcut.TargetPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if (-not (Test-Path -LiteralPath $shortcut.TargetPath)) { throw "Windows PowerShell was not found: $($shortcut.TargetPath)" }
+    $shortcut.Arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + (Join-Path $InstallDir 'Configure-Z1Bridge.ps1') + '"'
+    $shortcut.WorkingDirectory = $InstallDir
+    $shortcut.Description = 'Rediscover the Makera Z1 and update the TCP bridge connection.'
+    $shortcut.IconLocation = "$env:SystemRoot\System32\shell32.dll,13"
+    $shortcut.Save()
 
     @"
 # Makera Z1 connection used by the standalone TCP bridge.

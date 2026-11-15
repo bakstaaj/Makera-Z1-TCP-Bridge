@@ -8,12 +8,22 @@ This bridge supports the Makera Z1 protocol. It does not currently support other
 
 ## Quick start
 
-1. Download and extract the [v0.3.18 release package](https://github.com/bakstaaj/Makera-Z1-TCP-Bridge/releases/download/makera-z1-tcp-bridge-v0.3.18/makera-z1-tcp-bridge-v0.3.18.zip). Verify it with the adjacent `.sha256` file if desired.
+1. Download and extract the [v0.3.19 release package](https://github.com/bakstaaj/Makera-Z1-TCP-Bridge/releases/download/makera-z1-tcp-bridge-v0.3.19/makera-z1-tcp-bridge-v0.3.19.zip). Verify it with the adjacent `.sha256` file if desired.
 2. Open PowerShell **as Administrator**, change to the extracted folder, and run `Install-Z1Bridge.ps1`.
 3. Choose automatic discovery when prompted. The installer listens for Z1 beacons on UDP `3333`, then lets you select a detected machine. If discovery does not find one, enter its IP address and TCP port manually; the usual Z1 port is `2222`.
 4. In gSender, select **Ethernet** and connect to host `127.0.0.1`, port `2323`, using the GRBL profile.
 
 The installer creates `C:\makera_z1_tcp_bridge`, writes `config.yaml`, and installs the `MakeraZ1TcpBridge` Windows service. These service and data-directory names are retained for in-place updates. The executable does not require a separate Python installation. YAML stores the Z1 connection, local listener, optional rotary setting, debug logging, and fallback GRBL profile.
+
+## Open the connection settings UI
+
+After installation, open the Windows **Start** menu and search for **Configure Makera Z1 TCP Bridge**. You can also open **All apps > Makera Z1 TCP Bridge > Configure Makera Z1 TCP Bridge**. Windows may ask you to approve administrator access.
+
+In the settings window, click **Discover Z1** to listen for UDP `3333` beacons, select a detected machine, or enter the IPv4 address and TCP port manually. Click **Save and restart service** to apply the new connection. You do not need to reinstall the bridge to change its address after this UI is installed.
+
+Installations created before this UI was added do not have the Start menu shortcut yet. Run `Install-Z1Bridge.ps1` from the updated package once to add it; your existing configuration is retained as the installer's defaults.
+
+If you installed the v0.3.19 test package and its shortcut opens a **Missing Shortcut** dialog, extract the corrected package and run `Fix-ConfigureShortcut.ps1` as Administrator. It repairs the Start menu link and refreshes the UI files without restarting or reinstalling the bridge service.
 
 ## Supported Makera Z1 translations
 
@@ -66,9 +76,16 @@ Protocol translation is based on captured Makera Studio traffic and the publishe
 
 ## Package contents
 
-The ZIP includes the prebuilt bridge executable, NSSM service wrapper and notice, installer, Z1 discovery script, update/uninstall scripts, C# source, build/package scripts, README, and screenshot.
+The ZIP includes the prebuilt bridge executable, NSSM service wrapper and notice, installer, bridge configuration UI, shortcut repair helper, Z1 discovery script, update/uninstall scripts, C# source, build/package scripts, README, and screenshot.
 
 ## Release notes
+
+### 0.3.19
+
+- Added a Start menu configuration UI to rerun Z1 UDP discovery, edit the controller IP and TCP port, and restart the bridge service without reinstalling.
+- The UI preserves local listener settings, handles Windows CRLF configuration files, and confirms restart by checking that the new bridge process owns port 2323.
+- Added a shortcut repair helper for installations of the earlier 0.3.19 test package.
+- Published package: [makera-z1-tcp-bridge-v0.3.19.zip](https://github.com/bakstaaj/Makera-Z1-TCP-Bridge/releases/download/makera-z1-tcp-bridge-v0.3.19/makera-z1-tcp-bridge-v0.3.19.zip).
 
 ### 0.3.18
 
